@@ -277,7 +277,7 @@ server {
 }
 ```
 
-`TELEGRAM_API_ROOT` and `TELEGRAM_PROXY_URL` are independent — the former picks the URL the bot connects to (a reverse proxy on your side), the latter tunnels TCP through a forward proxy. They can be combined, though that is unusual.
+`TELEGRAM_API_ROOT` and `TELEGRAM_PROXY_URL` are alternative connectivity modes — the former picks the URL the bot connects to (a reverse proxy on your side), while the latter tunnels TCP through a forward proxy. Configure only one of them; the bot rejects using both at startup.
 
 ### Voice and Audio Transcription (Optional)
 
