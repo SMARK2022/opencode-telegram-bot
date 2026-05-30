@@ -38,6 +38,7 @@ import {
   handleCommandsCallback,
   handleCommandTextArguments,
 } from "./commands/commands.js";
+import { handleMessagesCallback, messagesCommand } from "./commands/messages.js";
 import {
   skillsCommand,
   handleSkillsCallback,
@@ -1177,6 +1178,7 @@ export function createBot(): Bot<Context> {
   bot.command("open", openCommand);
   bot.command("ls", lsCommand);
   bot.command("sessions", sessionsCommand);
+  bot.command("messages", messagesCommand);
   bot.command("new", (ctx) => newCommand(ctx, { bot, ensureEventSubscription }));
   bot.command("abort", abortCommand);
   bot.command("detach", detachCommand);
@@ -1226,11 +1228,12 @@ export function createBot(): Bot<Context> {
       const handledTaskList = await handleTaskListCallback(ctx);
       const handledRenameCancel = await handleRenameCancel(ctx);
       const handledCommands = await handleCommandsCallback(ctx, { bot, ensureEventSubscription });
+      const handledMessages = await handleMessagesCallback(ctx, { bot, ensureEventSubscription });
       const handledSkills = await handleSkillsCallback(ctx, { bot, ensureEventSubscription });
       const handledMcps = await handleMcpsCallback(ctx);
 
       logger.debug(
-        `[Bot] Callback handled: backgroundSession=${handledBackgroundSession}, inlineCancel=${handledInlineCancel}, session=${handledSession}, project=${handledProject}, worktree=${handledWorktree}, open=${handledOpen}, ls=${handledLs}, question=${handledQuestion}, permission=${handledPermission}, agent=${handledAgent}, modelSearch=${handledModelSearch}, modelSearchResults=${handledModelSearchResults}, model=${handledModel}, variant=${handledVariant}, compactConfirm=${handledCompactConfirm}, task=${handledTask}, taskList=${handledTaskList}, rename=${handledRenameCancel}, commands=${handledCommands}, skills=${handledSkills}, mcps=${handledMcps}`,
+        `[Bot] Callback handled: backgroundSession=${handledBackgroundSession}, inlineCancel=${handledInlineCancel}, session=${handledSession}, project=${handledProject}, worktree=${handledWorktree}, open=${handledOpen}, ls=${handledLs}, question=${handledQuestion}, permission=${handledPermission}, agent=${handledAgent}, modelSearch=${handledModelSearch}, modelSearchResults=${handledModelSearchResults}, model=${handledModel}, variant=${handledVariant}, compactConfirm=${handledCompactConfirm}, task=${handledTask}, taskList=${handledTaskList}, rename=${handledRenameCancel}, commands=${handledCommands}, messages=${handledMessages}, skills=${handledSkills}, mcps=${handledMcps}`,
       );
 
       if (
@@ -1253,6 +1256,7 @@ export function createBot(): Bot<Context> {
         !handledTaskList &&
         !handledRenameCancel &&
         !handledCommands &&
+        !handledMessages &&
         !handledSkills &&
         !handledMcps
       ) {
