@@ -3,10 +3,27 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { spawnMock, execMock } = vi.hoisted(() => ({
-  spawnMock: vi.fn(),
-  execMock: vi.fn(),
-}));
+const { spawnMock, execMock } = vi.hoisted(() => {
+  const spawnMock = vi.fn();
+  const execMock = vi.fn() as ReturnType<typeof vi.fn> & {
+    [key: symbol]: (command: string) => Promise<{ stdout: string; stderr: string }>;
+  };
+
+  const customPromisifySymbol = Symbol.for("nodejs.util.promisify.custom");
+  execMock[customPromisifySymbol] = function (this: unknown, command: string) {
+    return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+      execMock(command, (error: Error | null, stdout: string, stderr: string) => {
+        if (error) {
+          reject(Object.assign(error, { stdout, stderr }));
+        } else {
+          resolve({ stdout, stderr });
+        }
+      });
+    });
+  };
+
+  return { spawnMock, execMock };
+});
 
 const { getRuntimePathsMock, runtimePathsState } = vi.hoisted(() => {
   const runtimePathsState = {
@@ -33,6 +50,15 @@ vi.mock("node:child_process", () => ({
 
 vi.mock("../../../src/runtime/paths.js", () => ({
   getRuntimePaths: getRuntimePathsMock,
+}));
+
+vi.mock("../../../src/utils/logger.js", () => ({
+  logger: {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  },
 }));
 
 import {
@@ -209,6 +235,151 @@ describe("runtime/service/manager", () => {
         }),
       );
       await expect(fs.access(getServiceStateFilePath())).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      restorePlatform();
+    }
+  });
+
+  it("detects recycled PID via process creation time", async () => {
+    const restorePlatform = setPlatform("win32");
+
+    const daemonStartedAt = new Date("2026-07-18T20:56:06.413Z");
+    const stolenPid = 11236;
+
+    await fs.mkdir(path.dirname(getServiceStateFilePath()), { recursive: true });
+    await fs.writeFile(
+      getServiceStateFilePath(),
+      JSON.stringify({
+        pid: stolenPid,
+        startedAt: daemonStartedAt.toISOString(),
+        logFilePath: path.join(tempDirPath, "logs", "bot-service.log"),
+        mode: "daemon",
+      }),
+    );
+
+    vi.spyOn(process, "kill").mockImplementation(() => true);
+
+    execMock.mockImplementation(
+      (
+        command: string,
+        callback: (error: Error | null, stdout: string, stderr: string) => void,
+      ) => {
+        if (command.includes("powershell") && command.includes(String(stolenPid))) {
+          callback(null, "20260719095542.123456+180\n", "");
+        } else {
+          callback(null, "", "");
+        }
+        return {};
+      },
+    );
+
+    try {
+      const status = await getBotServiceStatus();
+
+      expect(status).toEqual({
+        status: "stopped",
+        service: null,
+        cleanupReason: "stale",
+      });
+      await expect(fs.access(getServiceStateFilePath())).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      restorePlatform();
+    }
+  });
+
+  it("returns running when PID exists and creation time matches", async () => {
+    const restorePlatform = setPlatform("win32");
+
+    const daemonStartedAt = new Date("2026-07-18T20:56:06.413Z");
+    const pid = 11236;
+
+    await fs.mkdir(path.dirname(getServiceStateFilePath()), { recursive: true });
+    await fs.writeFile(
+      getServiceStateFilePath(),
+      JSON.stringify({
+        pid,
+        startedAt: daemonStartedAt.toISOString(),
+        logFilePath: path.join(tempDirPath, "logs", "bot-service.log"),
+        mode: "daemon",
+      }),
+    );
+
+    vi.spyOn(process, "kill").mockImplementation(() => true);
+
+    execMock.mockImplementation(
+      (
+        command: string,
+        callback: (error: Error | null, stdout: string, stderr: string) => void,
+      ) => {
+        if (command.includes("powershell") && command.includes(String(pid))) {
+          const creationDateStr =
+            daemonStartedAt.getFullYear().toString() +
+            String(daemonStartedAt.getMonth() + 1).padStart(2, "0") +
+            String(daemonStartedAt.getDate()).padStart(2, "0") +
+            String(daemonStartedAt.getHours()).padStart(2, "0") +
+            String(daemonStartedAt.getMinutes()).padStart(2, "0") +
+            String(daemonStartedAt.getSeconds()).padStart(2, "0") +
+            ".000000+180";
+          callback(null, `${creationDateStr}\n`, "");
+        } else {
+          callback(null, "", "");
+        }
+        return {};
+      },
+    );
+
+    try {
+      const status = await getBotServiceStatus();
+
+      expect(status).toEqual({
+        status: "running",
+        service: expect.objectContaining({ pid, mode: "daemon" }),
+        cleanupReason: null,
+      });
+      await expect(fs.access(getServiceStateFilePath())).resolves.toBeUndefined();
+    } finally {
+      restorePlatform();
+    }
+  });
+
+  it("falls back to PID-only check when creation time cannot be determined", async () => {
+    const restorePlatform = setPlatform("win32");
+
+    await fs.mkdir(path.dirname(getServiceStateFilePath()), { recursive: true });
+    await fs.writeFile(
+      getServiceStateFilePath(),
+      JSON.stringify({
+        pid: 9999,
+        startedAt: new Date().toISOString(),
+        logFilePath: path.join(tempDirPath, "logs", "bot-service.log"),
+        mode: "daemon",
+      }),
+    );
+
+    vi.spyOn(process, "kill").mockImplementation(() => true);
+
+    execMock.mockImplementation(
+      (
+        command: string,
+        callback: (error: Error | null, stdout: string, stderr: string) => void,
+      ) => {
+        if (command.includes("powershell")) {
+          callback(new Error("PowerShell failed"), "", "");
+        } else {
+          callback(null, "", "");
+        }
+        return {};
+      },
+    );
+
+    try {
+      const status = await getBotServiceStatus();
+
+      expect(status).toEqual({
+        status: "running",
+        service: expect.objectContaining({ pid: 9999, mode: "daemon" }),
+        cleanupReason: null,
+      });
     } finally {
       restorePlatform();
     }
