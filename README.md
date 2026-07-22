@@ -1,11 +1,9 @@
 # OpenCode Telegram Bot
 
-[![npm version](https://img.shields.io/npm/v/@grinev/opencode-telegram-bot)](https://www.npmjs.com/package/@grinev/opencode-telegram-bot)
-[![CI](https://github.com/grinev/opencode-telegram-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/grinev/opencode-telegram-bot/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/SMARK2022/opencode-telegram-bot)](https://github.com/SMARK2022/opencode-telegram-bot/releases/latest)
+[![CI](https://github.com/SMARK2022/opencode-telegram-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/SMARK2022/opencode-telegram-bot/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://nodejs.org)
-[![Follow updates](https://img.shields.io/badge/-Follow%20updates-333333?logo=x)](https://x.com/grin_rus)
-[![Community](https://img.shields.io/badge/Community-Telegram-26A5E4?logo=telegram&logoColor=white)](https://t.me/+Fj_IyKRi6-41MGUy)
 
 OpenCode Telegram Bot is a secure Telegram client for [OpenCode](https://opencode.ai) CLI that runs on your local machine.
 
@@ -23,7 +21,9 @@ Languages: English (`en`), العربية (`ar`), Deutsch (`de`), Español (`es`
   <img src="assets/screencast.gif" width="45%" alt="OpenCode Telegram Bot screencast" />
 </p>
 
-> I use [boardown](https://github.com/grinev/boardown), my open-source Markdown-based task board, to plan and track this project. It stores tasks in plain `.md` files and can be used as a VS Code extension or a desktop app.
+This standalone distribution is based on the original
+[`grinev/opencode-telegram-bot`](https://github.com/grinev/opencode-telegram-bot)
+project and is maintained independently for SMARK OpenCode compatibility.
 
 ## Features
 
@@ -54,7 +54,7 @@ Planned features currently in development are listed in [Current Task List](PROD
 ## Prerequisites
 
 - **Node.js 20+** — [download](https://nodejs.org)
-- **OpenCode** — install from [opencode.ai](https://opencode.ai) or [GitHub](https://github.com/sst/opencode)
+- **SMARK OpenCode** — install a build from [SMARK2022/opencode](https://github.com/SMARK2022/opencode) that provides the daemon machine commands used by this bot
 - **Telegram Bot** — you'll create one during setup (takes 1 minute)
 
 ## Quick Start
@@ -78,22 +78,28 @@ the normal OpenCode TUI. No port, URL, `serve`, or `attach` command is required.
 
 ### 3. Install & Run
 
-The fastest way — run directly with `npx`:
+Download the `.tgz` asset from the
+[latest GitHub Release](https://github.com/SMARK2022/opencode-telegram-bot/releases/latest),
+then install it globally:
 
 ```bash
-npx @grinev/opencode-telegram-bot@latest
+npm install -g ./smark2022-opencode-telegram-bot-0.22.4.tgz
+opencode-telegram start
 ```
 
-> **Note:** This README tracks the `main` branch, which may include unreleased changes. The latest npm release may not include every feature described here yet. See [recent commits on `main`](https://github.com/grinev/opencode-telegram-bot/commits/main).
+> Releases are distributed through GitHub rather than npm. Verify the downloaded
+> asset with its adjacent `.sha256` file when installing on another machine.
 
 > Quick start is for npm usage. You do not need to clone this repository. If you run this command from the source directory (repository root), it may fail with `opencode-telegram: not found`. To run from sources, use the [Development](#development) section.
 
 If required configuration is not supplied through process environment variables or an `.env` file, an interactive wizard will guide you through setup. It asks for interface language first, then your bot token, user ID, OpenCode API URL, and optional OpenCode server credentials (username/password). After that, you're ready to go. Open your bot in Telegram and start sending tasks.
 
-#### Alternative: Global Install
+#### Install From A Local Checkout
 
 ```bash
-npm install -g @grinev/opencode-telegram-bot
+npm ci
+npm run build
+npm install -g .
 opencode-telegram start
 ```
 
@@ -407,7 +413,7 @@ Since the bot runs locally on your machine and connects to your local OpenCode s
 ### Running from Source
 
 ```bash
-git clone https://github.com/grinev/opencode-telegram-bot.git
+git clone https://github.com/SMARK2022/opencode-telegram-bot.git
 cd opencode-telegram-bot
 npm install
 cp .env.example .env
@@ -465,7 +471,7 @@ Please follow commit and release note conventions in [CONTRIBUTING.md](CONTRIBUT
 
 ## Community
 
-Have questions, want to share your experience using the bot, or have an idea for a feature? Join the [Telegram group](https://t.me/+Fj_IyKRi6-41MGUy) for announcements and discussions, or start a thread in [GitHub Discussions](https://github.com/grinev/opencode-telegram-bot/discussions).
+Have questions, want to share your experience using the bot, or have an idea for a feature? Start a thread in [GitHub Discussions](https://github.com/SMARK2022/opencode-telegram-bot/discussions).
 
 ## License
 

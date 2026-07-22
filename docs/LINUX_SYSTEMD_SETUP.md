@@ -3,7 +3,10 @@
 ## 1. Install and configure the bot
 
 ```bash
-npm install -g @grinev/opencode-telegram-bot@latest
+curl -LO https://github.com/SMARK2022/opencode-telegram-bot/releases/download/v0.22.4/smark2022-opencode-telegram-bot-0.22.4.tgz
+curl -LO https://github.com/SMARK2022/opencode-telegram-bot/releases/download/v0.22.4/smark2022-opencode-telegram-bot-0.22.4.tgz.sha256
+sha256sum --check smark2022-opencode-telegram-bot-0.22.4.tgz.sha256
+npm install -g ./smark2022-opencode-telegram-bot-0.22.4.tgz
 opencode-telegram config
 ```
 
