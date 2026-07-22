@@ -1,8 +1,42 @@
-import { describe, expect, it } from "vitest";
-import { supportsInput, supportsAttachment } from "../../../src/app/services/model-capabilities-service.js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  getModelCapabilities,
+  supportsInput,
+  supportsAttachment,
+} from "../../../src/app/services/model-capabilities-service.js";
 import type { Model } from "@opencode-ai/sdk/v2";
 
+const mocked = vi.hoisted(() => ({ providers: vi.fn(), getCurrentProject: vi.fn() }));
+
+vi.mock("../../../src/opencode/client.js", () => ({
+  opencodeClient: { config: { providers: mocked.providers } },
+}));
+vi.mock("../../../src/app/stores/settings-store.js", () => ({
+  getCurrentProject: mocked.getCurrentProject,
+}));
+
 describe("model/capabilities", () => {
+  beforeEach(() => {
+    mocked.providers.mockReset();
+    mocked.getCurrentProject.mockReset();
+    mocked.getCurrentProject.mockReturnValue({ worktree: "/project-capability" });
+  });
+
+  it("requests capabilities in the selected Project", async () => {
+    // capabilities可能由Project配置改变，因此unscoped成功不是可接受结果。
+    // literal worktree锁定SDK query contract，不断言private cache对象。
+    // attachment值只让真实consumer完成解析，测试重点仍是directory boundary。
+    mocked.providers.mockResolvedValue({
+      data: {
+        providers: [{ id: "provider", models: { model: { capabilities: { attachment: true } } } }],
+      },
+      error: null,
+    });
+
+    await getModelCapabilities("provider", "model");
+
+    expect(mocked.providers).toHaveBeenCalledWith({ directory: "/project-capability" });
+  });
   describe("supportsInput", () => {
     it("returns true when model supports image input", () => {
       const capabilities: Model["capabilities"] = {

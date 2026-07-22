@@ -95,6 +95,7 @@ type ToolFileCallback = (fileInfo: ToolFileInfo) => void;
 type QuestionCallback = (questions: Question[], requestID: string, sessionId: string) => void;
 
 type QuestionErrorCallback = () => void;
+type QuestionResolvedCallback = (sessionId: string, requestID: string) => void | Promise<void>;
 
 type ThinkingCallback = (update: ThinkingUpdate) => void;
 
@@ -243,6 +244,7 @@ class SummaryAggregator {
   private onToolFileCallback: ToolFileCallback | null = null;
   private onQuestionCallback: QuestionCallback | null = null;
   private onQuestionErrorCallback: QuestionErrorCallback | null = null;
+  private onQuestionResolvedCallback: QuestionResolvedCallback | null = null;
   private onThinkingCallback: ThinkingCallback | null = null;
   private onThinkingFinishedCallback: ThinkingFinishedCallback | null = null;
   private onTokensCallback: TokensCallback | null = null;
@@ -312,6 +314,10 @@ class SummaryAggregator {
 
   setOnQuestionError(callback: QuestionErrorCallback): void {
     this.onQuestionErrorCallback = callback;
+  }
+
+  setOnQuestionResolved(callback: QuestionResolvedCallback): void {
+    this.onQuestionResolvedCallback = callback;
   }
 
   setOnThinking(callback: ThinkingCallback): void {
@@ -463,9 +469,11 @@ class SummaryAggregator {
         break;
       case "question.replied":
         logger.info(`[Aggregator] Question replied: requestID=${event.properties.requestID}`);
+        this.handleQuestionResolved(event.properties.sessionID, event.properties.requestID);
         break;
       case "question.rejected":
         logger.info(`[Aggregator] Question rejected: requestID=${event.properties.requestID}`);
+        this.handleQuestionResolved(event.properties.sessionID, event.properties.requestID);
         break;
       case "session.diff":
         this.handleSessionDiff(event);
@@ -2073,7 +2081,7 @@ class SummaryAggregator {
   private handleSessionDiff(event: Event): void {
     const properties = event.properties as {
       sessionID: string;
-      diff: Array<{ file: string; additions: number; deletions: number }>;
+      diff: Array<{ file?: string; additions: number; deletions: number }>;
     };
 
     if (properties.sessionID !== this.currentSessionId) {
@@ -2083,17 +2091,36 @@ class SummaryAggregator {
     logger.debug(`[Aggregator] Session diff: ${properties.diff.length} files changed`);
 
     if (this.onSessionDiffCallback) {
-      const diffs: FileChange[] = properties.diff.map((d) => ({
-        file: d.file,
-        additions: d.additions,
-        deletions: d.deletions,
-      }));
+      // Snapshot legacy数据允许file缺失；Event adapter只发布可表示为FileChange的命名项。
+      // 不合成filename可避免把统计归到错误文件，并保持Snapshot source of truth。
+      // 空named集合仍作为合法diff callback发布，consumer可按既有空态处理。
+      // filter位于wire-to-domain边界，FileChange下游无需重复optional防御。
+      const diffs: FileChange[] = properties.diff
+        .filter((diff): diff is typeof diff & { file: string } => Boolean(diff.file))
+        .map((diff) => ({
+          file: diff.file,
+          additions: diff.additions,
+          deletions: diff.deletions,
+        }));
 
       const callback = this.onSessionDiffCallback;
       setImmediate(() => {
         callback(properties.sessionID, diffs);
       });
     }
+  }
+
+  private handleQuestionResolved(sessionId: string, requestID: string): void {
+    // shared daemon允许TUI先回答；resolution必须按Session和request双重归属后发布。
+    // callback失败只影响Telegram清理诊断，不篡改OpenCode已经完成的Question结果。
+    // echoed Telegram事件由manager幂等处理，不能清理后来出现的新request。
+    if (sessionId !== this.currentSessionId || !this.onQuestionResolvedCallback) return;
+    const callback = this.onQuestionResolvedCallback;
+    setImmediate(() => {
+      void Promise.resolve(callback(sessionId, requestID)).catch((error) => {
+        logger.error("[Aggregator] Error in question resolved callback:", error);
+      });
+    });
   }
 
   private handlePermissionAsked(

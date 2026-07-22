@@ -9,6 +9,7 @@ import {
 import { logger } from "../../utils/logger.js";
 import { t } from "../../i18n/index.js";
 import { editBotText } from "../messages/telegram-text.js";
+import { isDaemonMode, stopOpencodeConnection } from "../../opencode/daemon-connection.js";
 
 /**
  * Command handler for /opencode-stop
@@ -16,7 +17,25 @@ import { editBotText } from "../messages/telegram-text.js";
  */
 export async function opencodeStopCommand(ctx: CommandContext<Context>) {
   try {
-    const localTarget = resolveLocalOpencodeTarget(config.opencode.apiUrl);
+    if (isDaemonMode()) {
+      // desired stopped在Event abort前提交，断线观察者不能把用户停止误判成故障。
+      // safe daemon stop属于OpenCode authenticated control path，bot不处理owner token。
+      // success只在CLI完成后发送，不能把“已请求停止”当作“已停止”。
+      // process-level stream关闭后由daemon idle/stop语义决定owner，不保留第二liveness连接。
+      await stopOpencodeConnection();
+      await ctx.reply(t("opencode_stop.success"));
+      return;
+    }
+
+    const apiUrl = config.opencode.apiUrl;
+    // explicit Server支持域继续按配置端口查找PID，这是已发布兼容而非daemon备用路径。
+    // remote URL保持unmanaged，bot不会跨主机猜测或终止Server进程。
+    // mode invariant损坏直接进入error UI，不尝试shared daemon取得成功。
+    // 后续health复核只验证同一configured Server，没有跨URL恢复分支。
+    if (!apiUrl) {
+      throw new Error("OpenCode Server URL is missing in direct Server mode");
+    }
+    const localTarget = resolveLocalOpencodeTarget(apiUrl);
     if (!localTarget) {
       await ctx.reply(t("opencode_stop.remote_configured"));
       return;

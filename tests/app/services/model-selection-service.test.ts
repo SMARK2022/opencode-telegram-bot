@@ -7,6 +7,7 @@ const {
   configMock,
   providersMock,
   getCurrentModelMock,
+  getCurrentProjectMock,
   setCurrentModelMock,
   setCurrentModelState,
   getCurrentModelState,
@@ -36,6 +37,7 @@ const {
     },
     providersMock: vi.fn(),
     getCurrentModelMock,
+    getCurrentProjectMock: vi.fn(() => ({ worktree: "/project-a" })),
     setCurrentModelMock,
     setCurrentModelState: (modelInfo?: {
       providerID: string;
@@ -71,6 +73,7 @@ vi.mock("../../../src/opencode/client.js", () => ({
 
 vi.mock("../../../src/app/stores/settings-store.js", () => ({
   getCurrentModel: getCurrentModelMock,
+  getCurrentProject: getCurrentProjectMock,
   setCurrentModel: setCurrentModelMock,
 }));
 
@@ -114,6 +117,8 @@ describe("app/services/model-selection-service", () => {
 
     vi.useRealTimers();
     resetCurrentModelState();
+    getCurrentProjectMock.mockReset();
+    getCurrentProjectMock.mockReturnValue({ worktree: "/project-a" });
     __resetModelCatalogCacheForTests();
 
     loggerInfoMock.mockReset();
@@ -130,6 +135,25 @@ describe("app/services/model-selection-service", () => {
         google: ["gemini-pro"],
       }),
     );
+  });
+
+  it("isolates Provider catalog cache across Project worktrees", async () => {
+    // A/B返回不同model literal，使跨Project cache污染直接表现为错误搜索结果。
+    // directory argv来自settings fixture，不复制production cache-key拼接方式。
+    // 两次请求同时证明value cache与in-flight identity没有跨worktree复用。
+    providersMock
+      .mockResolvedValueOnce(createProvidersResponse({ provider: ["model-a"] }))
+      .mockResolvedValueOnce(createProvidersResponse({ provider: ["model-b"] }));
+
+    expect(await searchModels("model-a")).toEqual([{ providerID: "provider", modelID: "model-a" }]);
+    getCurrentProjectMock.mockReturnValue({ worktree: "/project-b" });
+    expect(await searchModels("model-b")).toEqual([{ providerID: "provider", modelID: "model-b" }]);
+
+    // 两个Project必须各自产生带directory的请求，第二次不能命中第一个worktree的cache。
+    expect(providersMock.mock.calls).toEqual([
+      [{ directory: "/project-a" }],
+      [{ directory: "/project-b" }],
+    ]);
   });
 
   afterEach(async () => {

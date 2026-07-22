@@ -7,6 +7,8 @@ const mocked = vi.hoisted(() => ({
   resolveLocalOpencodeTargetMock: vi.fn(),
   findServerPidMock: vi.fn(),
   killServerProcessMock: vi.fn(),
+  isDaemonModeMock: vi.fn(),
+  stopOpencodeConnectionMock: vi.fn(),
   editBotTextMock: vi.fn(),
   loggerInfoMock: vi.fn(),
   loggerErrorMock: vi.fn(),
@@ -34,7 +36,10 @@ vi.mock("../../../src/opencode/process.js", () => ({
   findServerPid: mocked.findServerPidMock,
   killServerProcess: mocked.killServerProcessMock,
 }));
-
+vi.mock("../../../src/opencode/daemon-connection.js", () => ({
+  isDaemonMode: mocked.isDaemonModeMock,
+  stopOpencodeConnection: mocked.stopOpencodeConnectionMock,
+}));
 vi.mock("../../../src/bot/messages/telegram-text.js", () => ({
   editBotText: mocked.editBotTextMock,
 }));
@@ -62,11 +67,15 @@ describe("bot/commands/opencode-stop-command", () => {
     mocked.resolveLocalOpencodeTargetMock.mockReset();
     mocked.findServerPidMock.mockReset();
     mocked.killServerProcessMock.mockReset();
+    mocked.isDaemonModeMock.mockReset();
+    mocked.stopOpencodeConnectionMock.mockReset();
     mocked.editBotTextMock.mockReset();
     mocked.loggerInfoMock.mockReset();
     mocked.loggerErrorMock.mockReset();
 
     mocked.config.opencode.apiUrl = "http://localhost:4096";
+    mocked.isDaemonModeMock.mockReturnValue(false);
+    mocked.stopOpencodeConnectionMock.mockResolvedValue(undefined);
     mocked.resolveLocalOpencodeTargetMock.mockReturnValue({ host: "localhost", port: 4096 });
     mocked.editBotTextMock.mockResolvedValue(undefined);
   });
@@ -80,6 +89,19 @@ describe("bot/commands/opencode-stop-command", () => {
 
     expect(ctx.reply).toHaveBeenCalledWith(t("opencode_stop.remote_configured"));
     expect(mocked.findServerPidMock).not.toHaveBeenCalled();
+  });
+
+  it("delegates shared daemon shutdown to the connection owner", async () => {
+    // safe stop mock代表OpenCode authenticated control owner，不允许port PID扫描。
+    // Event和client authority由connection transition统一撤销，command不能建立第二套停止顺序。
+    mocked.isDaemonModeMock.mockReturnValue(true);
+    const ctx = createContext();
+
+    await opencodeStopCommand(ctx as never);
+
+    expect(mocked.stopOpencodeConnectionMock).toHaveBeenCalledTimes(1);
+    expect(mocked.findServerPidMock).not.toHaveBeenCalled();
+    expect(ctx.reply).toHaveBeenCalledWith(t("opencode_stop.success"));
   });
 
   it("reports not_running when health-check fails", async () => {

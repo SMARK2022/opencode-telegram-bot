@@ -120,4 +120,20 @@ describe("questionManager", () => {
     expect(questionManager.getRequestID()).toBeNull();
     expect(questionManager.getCurrentQuestion()).toBeNull();
   });
+
+  it("resolves only the matching request and returns its Telegram message IDs", () => {
+    // unrelated ID先执行，证明resolution不会清理当前有效Question。
+    // copied IDs让Telegram service拥有删除动作，manager不吸收transport责任。
+    // 第二次matching调用锁定echoed event的幂等边界。
+    questionManager.startQuestions([SINGLE_QUESTION], "req-current");
+    questionManager.addMessageId(20);
+    questionManager.addMessageId(21);
+
+    expect(questionManager.resolveRequest("req-other")).toEqual([]);
+    expect(questionManager.isActive()).toBe(true);
+    expect(questionManager.resolveRequest("req-current")).toEqual([20, 21]);
+    // echoed reply在本地已clear后再次到达时必须幂等，不能清理后来的interaction。
+    expect(questionManager.resolveRequest("req-current")).toEqual([]);
+    expect(questionManager.isActive()).toBe(false);
+  });
 });

@@ -1964,4 +1964,52 @@ describe("summary/aggregator", () => {
     expect(onPermission).not.toHaveBeenCalled();
     expect(summaryAggregator.isSubagentSession("some-other-session")).toBe(false);
   });
+
+  it("publishes matching Question resolution and ignores unrelated Sessions", async () => {
+    // current与other Session事件并列输入，证明Session ownership过滤真实生效。
+    // setImmediate等待的是公开callback交付，不依赖private queue状态。
+    // request literal保持独立，避免测试复制manager matching实现。
+    const onResolved = vi.fn();
+    summaryAggregator.setOnQuestionResolved(onResolved);
+    summaryAggregator.setSession("session-1");
+
+    summaryAggregator.processEvent({
+      type: "question.replied",
+      properties: { sessionID: "session-1", requestID: "question-1", answers: [] },
+    } as unknown as Event);
+    summaryAggregator.processEvent({
+      type: "question.rejected",
+      properties: { sessionID: "session-other", requestID: "question-2" },
+    } as unknown as Event);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(onResolved).toHaveBeenCalledOnce();
+    expect(onResolved).toHaveBeenCalledWith("session-1", "question-1");
+  });
+
+  it("filters nameless Snapshot diffs before publishing FileChange", async () => {
+    // mixed fixture同时保护legacy omission与named diff的正常展示。
+    // expected FileChange不包含synthetic filename，锁定source-of-truth边界。
+    // callback seam覆盖wire event到domain value，不断言private type guard。
+    const onDiff = vi.fn();
+    summaryAggregator.setOnSessionDiff(onDiff);
+    summaryAggregator.setSession("session-1");
+
+    summaryAggregator.processEvent({
+      type: "session.diff",
+      properties: {
+        sessionID: "session-1",
+        diff: [
+          { additions: 3, deletions: 1 },
+          { file: "src/kept.ts", additions: 2, deletions: 0 },
+        ],
+      },
+    } as unknown as Event);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // expected value来自公开FileChange合同，未复制production filtering算法。
+    expect(onDiff).toHaveBeenCalledWith("session-1", [
+      { file: "src/kept.ts", additions: 2, deletions: 0 },
+    ]);
+  });
 });

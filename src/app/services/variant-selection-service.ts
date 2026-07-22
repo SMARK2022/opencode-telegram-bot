@@ -2,7 +2,7 @@
  * Variant Manager - manages model variants (reasoning modes)
  */
 import { opencodeClient } from "../../opencode/client.js";
-import { getCurrentModel, setCurrentModel } from "../stores/settings-store.js";
+import { getCurrentModel, getCurrentProject, setCurrentModel } from "../stores/settings-store.js";
 import { logger } from "../../utils/logger.js";
 import type { VariantInfo } from "../types/variant.js";
 
@@ -17,7 +17,12 @@ export async function getAvailableVariants(
   modelID: string,
 ): Promise<VariantInfo[]> {
   try {
-    const { data, error } = await opencodeClient.config.providers();
+    const directory = getCurrentProject()?.worktree;
+    // variant catalog与selected Project一致，避免切换后展示前一个worktree的reasoning modes。
+    // 无Project时保留公开的default variant，不进行unscoped Provider请求。
+    // direct directory参数沿用SDK owner，不在bot复制Workspace routing。
+    if (!directory) return [{ id: "default" }];
+    const { data, error } = await opencodeClient.config.providers({ directory });
 
     if (error || !data) {
       logger.warn("[VariantManager] Failed to fetch providers:", error);

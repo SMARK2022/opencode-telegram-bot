@@ -8,6 +8,9 @@ const mocked = vi.hoisted(() => ({
   resolveLocalOpencodeTargetMock: vi.fn(),
   startLocalOpencodeServerMock: vi.fn(),
   notifyReadyMock: vi.fn(),
+  isDaemonModeMock: vi.fn(),
+  startOpencodeConnectionMock: vi.fn(),
+  startOpencodeConnectionLifecycleMock: vi.fn(),
   editBotTextMock: vi.fn(),
   loggerDebugMock: vi.fn(),
   loggerInfoMock: vi.fn(),
@@ -16,6 +19,7 @@ const mocked = vi.hoisted(() => ({
   config: {
     opencode: {
       apiUrl: "http://localhost:4096",
+      mode: "server",
     },
   },
 }));
@@ -37,12 +41,20 @@ vi.mock("../../../src/opencode/process.js", () => ({
   startLocalOpencodeServer: mocked.startLocalOpencodeServerMock,
 }));
 
+vi.mock("../../../src/opencode/daemon-connection.js", () => ({
+  isDaemonMode: mocked.isDaemonModeMock,
+  startOpencodeConnection: mocked.startOpencodeConnectionMock,
+  startOpencodeConnectionLifecycle: mocked.startOpencodeConnectionLifecycleMock,
+}));
+
 vi.mock("../../../src/bot/messages/telegram-text.js", () => ({
   editBotText: mocked.editBotTextMock,
 }));
 
 vi.mock("../../../src/opencode/ready-lifecycle.js", () => ({
   opencodeReadyLifecycle: {
+    isReady: () => true,
+    onReady: vi.fn(),
     notifyReady: mocked.notifyReadyMock,
   },
 }));
@@ -80,6 +92,9 @@ describe("bot/commands/opencode-start-command", () => {
     mocked.resolveLocalOpencodeTargetMock.mockReset();
     mocked.startLocalOpencodeServerMock.mockReset();
     mocked.notifyReadyMock.mockReset();
+    mocked.isDaemonModeMock.mockReset();
+    mocked.startOpencodeConnectionMock.mockReset();
+    mocked.startOpencodeConnectionLifecycleMock.mockReset();
     mocked.editBotTextMock.mockReset();
     mocked.loggerDebugMock.mockReset();
     mocked.loggerInfoMock.mockReset();
@@ -87,6 +102,9 @@ describe("bot/commands/opencode-start-command", () => {
     mocked.loggerErrorMock.mockReset();
 
     mocked.config.opencode.apiUrl = "http://localhost:4096";
+    mocked.config.opencode.mode = "server";
+    mocked.isDaemonModeMock.mockReturnValue(false);
+    mocked.startOpencodeConnectionMock.mockResolvedValue("http://127.0.0.1:32100");
     mocked.resolveLocalOpencodeTargetMock.mockReturnValue({ host: "localhost", port: 4096 });
     mocked.notifyReadyMock.mockResolvedValue(true);
     mocked.editBotTextMock.mockResolvedValue(undefined);
@@ -104,6 +122,22 @@ describe("bot/commands/opencode-start-command", () => {
     await opencodeStartCommand(ctx as never);
 
     expect(ctx.reply).toHaveBeenCalledWith(t("opencode_start.remote_configured"));
+    expect(mocked.startLocalOpencodeServerMock).not.toHaveBeenCalled();
+  });
+
+  it("starts the shared daemon connection without fixed-port Server process", async () => {
+    // daemon mode只观察connection owner，standalone child保持零调用。
+    // lifecycle调用证明命令不仅获取URL，还恢复authoritative global stream。
+    // ready已由fixture满足，测试不依赖十秒真实timeout。
+    mocked.isDaemonModeMock.mockReturnValue(true);
+    mocked.config.opencode.mode = "daemon";
+    mocked.config.opencode.apiUrl = undefined as unknown as string;
+    const ctx = createContext();
+
+    await opencodeStartCommand(ctx as never);
+
+    expect(mocked.startOpencodeConnectionMock).toHaveBeenCalledTimes(1);
+    expect(mocked.startOpencodeConnectionLifecycleMock).toHaveBeenCalledTimes(1);
     expect(mocked.startLocalOpencodeServerMock).not.toHaveBeenCalled();
   });
 

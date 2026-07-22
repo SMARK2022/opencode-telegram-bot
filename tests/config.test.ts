@@ -320,6 +320,48 @@ describe("config boolean env parsing", () => {
   });
 });
 
+describe("OpenCode connection mode", () => {
+  // 这些输入来自真实env与wizard边界，断言mode而非内部normalization helper。
+  // loopback与remote literal共同证明hostname不会重解释显式Server意图。
+  // 空白样例锁定零配置startup，避免未来恢复隐式4096默认值。
+  beforeEach(() => {
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", "test-telegram-token");
+    vi.stubEnv("TELEGRAM_ALLOWED_USER_ID", "123456789");
+    vi.stubEnv("OPENCODE_MODEL_PROVIDER", "test-provider");
+    vi.stubEnv("OPENCODE_MODEL_ID", "test-model");
+  });
+
+  it.each([undefined, "", "   "])('treats "%s" as shared-daemon mode', async (value) => {
+    if (value === undefined) {
+      vi.unstubAllEnvs();
+      delete process.env.OPENCODE_API_URL;
+      vi.stubEnv("TELEGRAM_BOT_TOKEN", "test-telegram-token");
+      vi.stubEnv("TELEGRAM_ALLOWED_USER_ID", "123456789");
+      vi.stubEnv("OPENCODE_MODEL_PROVIDER", "test-provider");
+      vi.stubEnv("OPENCODE_MODEL_ID", "test-model");
+    } else {
+      vi.stubEnv("OPENCODE_API_URL", value);
+    }
+
+    const config = await loadConfig();
+
+    expect(config.opencode.mode).toBe("daemon");
+    expect(config.opencode.apiUrl).toBeUndefined();
+  });
+
+  it.each(["http://127.0.0.1:4987", "https://remote.example.test/opencode"]) (
+    "preserves every trim-nonempty URL as direct Server mode",
+    async (apiUrl) => {
+      vi.stubEnv("OPENCODE_API_URL", `  ${apiUrl}  `);
+
+      const config = await loadConfig();
+
+      expect(config.opencode.mode).toBe("server");
+      expect(config.opencode.apiUrl).toBe(apiUrl);
+    },
+  );
+});
+
 describe("config telegram reverse-proxy", () => {
   beforeEach(() => {
     vi.stubEnv("TELEGRAM_BOT_TOKEN", "test-telegram-token");

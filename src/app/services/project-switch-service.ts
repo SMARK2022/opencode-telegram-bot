@@ -11,14 +11,12 @@ import { setCurrentProject } from "../stores/settings-store.js";
 import { clearSession } from "./session-service.js";
 import { summaryAggregator } from "../managers/summary-aggregation-manager.js";
 import { detachAttachedSession } from "./attach-service.js";
-import { stopEventListening } from "../../opencode/events.js";
 import { backgroundSessionTracker } from "../managers/background-session-manager.js";
 import { getStoredAgent, resolveProjectAgent } from "./agent-selection-service.js";
 import { getStoredModel } from "./model-selection-service.js";
 import { formatVariantForButton } from "./variant-selection-service.js";
 import { clearAllInteractionState } from "../managers/interaction-manager.js";
 import { logger } from "../../utils/logger.js";
-import { config } from "../../config.js";
 
 interface ProjectSwitchContextInfo {
   tokensUsed: number;
@@ -57,7 +55,10 @@ export async function switchToProject(
   options: SwitchToProjectOptions,
 ) {
   detachAttachedSession(reason);
-  stopEventListening();
+  // Project切换只替换business filter；process-level global SSE继续承担daemon liveness。
+  // detach与summary clear属于业务状态，不能顺带关闭共享transport。
+  // 即使background tracking关闭，也更新directory以免旧Project callback继续接收事件。
+  // ensureEventSubscription在daemon mode复用现有stream，不产生第二个SSE client。
   backgroundSessionTracker.clear();
   setCurrentProject(project);
   clearSession();
@@ -81,7 +82,7 @@ export async function switchToProject(
   const variantName = formatVariantForButton(currentModel.variant || "default");
   options.presentation.updateKeyboardAgent(currentAgent);
 
-  if (config.bot.trackBackgroundSessions && options.ensureEventSubscription) {
+  if (options.ensureEventSubscription) {
     await options.ensureEventSubscription(project.worktree);
   }
 

@@ -167,6 +167,24 @@ function emitPermissionReplied(
   } as unknown as Event);
 }
 
+function emitQuestion(
+  summaryAggregator: { processEvent(event: Event): void },
+  type: "question.asked" | "question.replied" | "question.rejected",
+  requestID: string,
+): void {
+  summaryAggregator.processEvent({
+    type,
+    properties:
+      type === "question.asked"
+        ? {
+            id: requestID,
+            sessionID: "session-1",
+            questions: [{ question: "Proceed?", header: "confirm", options: [{ label: "Yes", description: "continue" }] }],
+          }
+        : { sessionID: "session-1", requestID },
+  } as unknown as Event);
+}
+
 describe("bot/services/event-subscription-service", () => {
   let tempHome: string;
   let activeService: { cleanup(reason: string): void } | null = null;
@@ -423,6 +441,27 @@ describe("bot/services/event-subscription-service", () => {
       expect(interactionManager.getSnapshot()).toBeNull();
     });
     expect(api.deleteMessage).toHaveBeenCalledWith(42, 500);
+  });
+
+  it("clears the matching Telegram Question when another client replies first", async () => {
+    // asked/replied通过真实aggregator seam，避免直接调用cleanup helper得到假绿。
+    // message ID来自Telegram send fixture，delete断言对应用户可见陈旧按钮。
+    // manager另测unrelated ID，本测试聚焦跨客户端reply的完整调用链。
+    const { api, summaryAggregator } = await setupService(true);
+    const [{ questionManager }, { interactionManager }] = await Promise.all([
+      import("../../../src/app/managers/question-manager.js"),
+      import("../../../src/app/managers/interaction-manager.js"),
+    ]);
+    api.sendMessage.mockResolvedValueOnce({ message_id: 520 });
+
+    emitQuestion(summaryAggregator, "question.asked", "question-1");
+    await vi.waitFor(() => expect(questionManager.getRequestID()).toBe("question-1"));
+    emitQuestion(summaryAggregator, "question.replied", "question-1");
+
+    await vi.waitFor(() => expect(questionManager.isActive()).toBe(false));
+    expect(api.deleteMessage).toHaveBeenCalledWith(42, 520);
+    // matching request清理自己的interaction；unrelated request由manager测试锁定为no-op。
+    expect(interactionManager.getSnapshot()).toBeNull();
   });
 
   it("discards a permission prompt resolved while its Telegram message is being sent", async () => {

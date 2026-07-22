@@ -4,6 +4,7 @@ const mocked = vi.hoisted(() => ({
   opencodeClient: {
     session: {
       list: vi.fn().mockResolvedValue({ data: [] }),
+      diff: vi.fn().mockResolvedValue({ data: [] }),
       messages: vi.fn().mockResolvedValue({ data: [] }),
     },
     config: { get: vi.fn().mockResolvedValue({ data: {} }) },
@@ -86,6 +87,7 @@ describe("pinned/manager", () => {
     mocked.getStoredModel.mockReturnValue({ providerID: "openai", modelID: "gpt-5" });
     mocked.getModelContextLimit.mockResolvedValue(204800);
     mocked.getPinnedMessageId.mockReturnValue(null);
+    mocked.opencodeClient.session.diff.mockResolvedValue({ data: [], error: null });
     mocked.opencodeClient.session.messages.mockResolvedValue({ data: [] });
     mocked.getGitWorktreeContext.mockResolvedValue({
       mainProjectPath: "D:/repo",
@@ -146,6 +148,63 @@ describe("pinned/manager", () => {
       const state = pinnedMessageManager.getState();
       expect(state.tokensUsed).toBe(400);
       expect(state.cost).toBeCloseTo(0.85);
+    });
+  });
+
+  describe("Snapshot diff compatibility", () => {
+    it("keeps named endpoint diffs and excludes unnamed legacy entries", async () => {
+      // mixed fixture同时携带current named与legacy unnamed项，验证trust seam不会因单个缺口丢弃真实diff。
+      // messages零调用证明named endpoint结果仍是主路径，不会扩张compatibility fallback。
+      mocked.opencodeClient.session.diff.mockResolvedValue({
+        data: [
+          { file: undefined, additions: 9, deletions: 1 },
+          { file: "src/named.ts", additions: 3, deletions: 2 },
+        ],
+        error: null,
+      });
+
+      await pinnedMessageManager.onSessionChange("ses-1", "Test Session");
+
+      expect(pinnedMessageManager.getState().changedFiles).toEqual([
+        { file: "src/named.ts", additions: 3, deletions: 2 },
+      ]);
+      expect(mocked.opencodeClient.session.messages).not.toHaveBeenCalled();
+    });
+
+    it("uses existing message compatibility when every endpoint diff is unnamed", async () => {
+      // all-unnamed不能被当作空成功；completed write part是既有可达consumer提供的独立真实文件来源。
+      // literal文件与行数来自fixture，不复制production message parser算法或合成legacy filename。
+      mocked.opencodeClient.session.diff.mockResolvedValue({
+        data: [{ file: undefined, additions: 5, deletions: 4 }],
+        error: null,
+      });
+      mocked.opencodeClient.session.messages.mockResolvedValue({
+        data: [
+          {
+            parts: [
+              {
+                type: "tool",
+                tool: "write",
+                state: {
+                  status: "completed",
+                  input: { filePath: "src/from-message.ts", content: "first\nsecond" },
+                },
+              },
+            ],
+          },
+        ],
+        error: null,
+      });
+
+      await pinnedMessageManager.onSessionChange("ses-1", "Test Session");
+
+      expect(pinnedMessageManager.getState().changedFiles).toEqual([
+        { file: "src/from-message.ts", additions: 2, deletions: 0 },
+      ]);
+      expect(mocked.opencodeClient.session.messages).toHaveBeenCalledWith({
+        sessionID: "ses-1",
+        directory: "D:/repo",
+      });
     });
   });
 

@@ -3,6 +3,11 @@ import { config } from "../../config.js";
 import { opencodeClient } from "../../opencode/client.js";
 import { resolveLocalOpencodeTarget, startLocalOpencodeServer } from "../../opencode/process.js";
 import { opencodeReadyLifecycle } from "../../opencode/ready-lifecycle.js";
+import {
+  isDaemonMode,
+  startOpencodeConnection,
+  startOpencodeConnectionLifecycle,
+} from "../../opencode/daemon-connection.js";
 import { logger } from "../../utils/logger.js";
 import { t } from "../../i18n/index.js";
 import { editBotText } from "../messages/telegram-text.js";
@@ -77,7 +82,39 @@ async function waitForServerReady(maxWaitMs: number = 10000): Promise<boolean> {
  */
 export async function opencodeStartCommand(ctx: CommandContext<Context>) {
   try {
-    const localTarget = resolveLocalOpencodeTarget(config.opencode.apiUrl);
+    if (isDaemonMode()) {
+      // 命令先恢复running intent与owner，再等待global connected后向用户报告成功。
+      // 十秒上限只控制Telegram诊断等待，不改变后台lifecycle继续重试的事实。
+      // fixed-port child在该分支完全不可达，explicit Server逻辑保留在后续分支。
+      // already-running文案复用现有i18n，避免为拓扑变化扩大用户消息接口。
+      await startOpencodeConnection();
+      startOpencodeConnectionLifecycle();
+      if (!opencodeReadyLifecycle.isReady()) {
+        await new Promise<void>((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            unsubscribe();
+            reject(new Error("OpenCode daemon global event stream did not become ready"));
+          }, SERVER_READY_TIMEOUT_MS);
+          const unsubscribe = opencodeReadyLifecycle.onReady(() => {
+            clearTimeout(timeout);
+            unsubscribe();
+            resolve();
+          });
+        });
+      }
+      await ctx.reply(t("opencode_start.already_running", { version: t("common.unknown") }));
+      return;
+    }
+
+    const apiUrl = config.opencode.apiUrl;
+    // server mode理论上必有effective URL；缺失表示配置invariant损坏而非daemon fallback信号。
+    // loopback target继续使用现有serve PID合同，remote target继续返回unmanaged提示。
+    // 此处不按hostname改变mode，只在已选Server域内判断本地进程管理能力。
+    // health tuple仍按既有逻辑解析，connection owner不吸收显式Server monitor责任。
+    if (!apiUrl) {
+      throw new Error("OpenCode Server URL is missing in direct Server mode");
+    }
+    const localTarget = resolveLocalOpencodeTarget(apiUrl);
     if (!localTarget) {
       await ctx.reply(t("opencode_start.remote_configured"));
       return;

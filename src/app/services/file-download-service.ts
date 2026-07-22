@@ -1,5 +1,4 @@
-// @ts-expect-error - node-fetch v2 ships no TS types and we avoid adding @types/node-fetch
-import nodeFetch from "node-fetch";
+import nodeFetch, { type RequestInit as NodeFetchRequestInit } from "node-fetch";
 import type { Api } from "grammy";
 import { Agent as HttpsAgent } from "https";
 import { config } from "../../config.js";
@@ -43,7 +42,11 @@ export async function downloadTelegramFile(api: Api, fileId: string): Promise<Do
   const fileUrl = buildTelegramFileUrl(file.file_path);
   logger.debug(`[FileDownload] Downloading from ${fileUrl.replace(config.telegram.token, "***")}`);
 
-  const fetchOptions: RequestInit & { agent?: unknown } = {};
+  // fetch options由实际node-fetch v2 adapter定型，避免DOM RequestInit把合法agent/body合同误判为不兼容。
+  // 类型owner修正不改变proxy agent、IPv4 agent或secret header的runtime组合。
+  // node-fetch声明已由安装图提供，旧suppression失效时应删除而不是扩大类型逃逸。
+  // file URL与token脱敏合同保持原样，本次只修外部adapter的init边界。
+  const fetchOptions: NodeFetchRequestInit = {};
 
   if (config.telegram.proxyUrl) {
     const { HttpsProxyAgent } = await import("https-proxy-agent");

@@ -70,7 +70,7 @@ import {
 import { buildBackgroundSessionOpenKeyboard } from "../menus/session-selection-menu.js";
 import { questionManager } from "../../app/managers/question-manager.js";
 import { permissionManager } from "../../app/managers/permission-manager.js";
-import { showCurrentQuestion } from "../menus/question-menu.js";
+import { clearQuestionInteraction, showCurrentQuestion } from "../menus/question-menu.js";
 import { showPermissionRequest, syncPermissionInteractionState } from "../menus/permission-menu.js";
 import {
   clearAllInteractionState,
@@ -682,6 +682,23 @@ class EventSubscriptionService implements BotEventSubscriptionService {
       clearAllInteractionState("question_error");
     });
 
+    summaryAggregator.setOnQuestionResolved(async (_sessionId, requestID) => {
+      // manager按requestID返回message IDs，service只拥有Telegram删除和interaction同步。
+      // 空数组意味着unrelated或已本地解决，不能清除当前新的Question interaction。
+      // 删除失败记录warning但不反转OpenCode Question结果，也不重新发送reply。
+      const messageIds = questionManager.resolveRequest(requestID);
+      if (messageIds.length === 0) return;
+      clearQuestionInteraction("question_resolved_elsewhere");
+      if (!this.botInstance || !this.chatIdInstance) return;
+      await Promise.all(
+        messageIds.map((messageId) =>
+          this.botInstance!.api.deleteMessage(this.chatIdInstance!, messageId).catch((error) => {
+            logger.warn(`[Bot] Failed to delete resolved question message ${messageId}:`, error);
+          }),
+        ),
+      );
+    });
+
     summaryAggregator.setOnPermission(async (request) => {
       const generation = permissionManager.getGeneration();
 
@@ -1078,7 +1095,10 @@ class EventSubscriptionService implements BotEventSubscriptionService {
       }
 
       summaryAggregator.processEvent(event);
-    }).catch((err) => {
+    // mode由归一化配置固定，Event runtime failure不能把daemon切换成legacy Server语义。
+    // callback更新只替换business consumer，transport lifetime仍属于process owner。
+    // catch保留诊断，不把订阅失败伪装成已开始tracking。
+    }, config.opencode.mode).catch((err) => {
       logger.error("Failed to subscribe to events:", err);
     });
   };

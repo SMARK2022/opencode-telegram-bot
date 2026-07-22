@@ -5,9 +5,11 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 
 import {
+  createOpencodeDaemonCommand,
   createOpencodeServeSpawnCommand,
   findUnixListeningPidInSs,
   findWindowsListeningPidInNetstat,
+  runOpencodeDaemonCommand,
 } from "../../src/opencode/process.js";
 
 describe("opencode/process", () => {
@@ -53,6 +55,54 @@ describe("opencode/process", () => {
       args: ["serve", "--port", "4987"],
       windowsHide: false,
     });
+  });
+
+  it("builds a shell-free daemon command for the current platform", () => {
+    // daemon argv必须保持数组边界；status/start参数不能进入cmd.exe或其他shell字符串。
+    if (process.platform === "win32") {
+      try {
+        const command = createOpencodeDaemonCommand(["status", "--json"]);
+        expect(path.isAbsolute(command.command)).toBe(true);
+        expect(command.command.toLowerCase().endsWith("\\opencode.exe")).toBe(true);
+        expect(command.args).toEqual(["daemon", "status", "--json"]);
+      } catch (error) {
+        expect(error).toEqual(new Error("Unable to resolve opencode.exe for daemon command"));
+      }
+      return;
+    }
+
+    expect(createOpencodeDaemonCommand(["status", "--json"])).toEqual({
+      command: "opencode",
+      args: ["daemon", "status", "--json"],
+      windowsHide: false,
+    });
+  });
+
+  it("preserves daemon argv and separates output from non-zero diagnostics", async () => {
+    if (process.platform === "win32") return;
+    // literal分号若被shell解释会提前退出；成功输出证明spawn保持argv并由fixture executable直接接收。
+    // 第二次运行保留stderr到拒绝信息，失败不能被部分stdout转换为machine成功。
+    const originalPath = process.env.PATH;
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-daemon-adapter-"));
+    const executable = path.join(tempRoot, "opencode");
+    try {
+      fs.writeFileSync(executable, '#!/bin/sh\nprintf "stdout:%s\\n" "$*"\nprintf "stderr-only\\n" >&2\n', "utf8");
+      fs.chmodSync(executable, 0o755);
+      process.env.PATH = tempRoot;
+
+      await expect(runOpencodeDaemonCommand(["status", "literal; exit 99"])).resolves.toEqual({
+        stdout: "stdout:daemon status literal; exit 99\n",
+        stderr: "stderr-only\n",
+      });
+
+      fs.writeFileSync(executable, '#!/bin/sh\nprintf "partial"\nprintf "adapter failed\\n" >&2\nexit 7\n', "utf8");
+      await expect(runOpencodeDaemonCommand(["status", "--json"])).rejects.toThrow(
+        "opencode daemon status exited with code 7: adapter failed",
+      );
+    } finally {
+      process.env.PATH = originalPath;
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
   });
 
   it("falls back to cmd.exe on Windows when opencode.exe cannot be resolved", () => {

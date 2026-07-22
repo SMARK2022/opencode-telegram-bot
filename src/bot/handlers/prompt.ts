@@ -15,7 +15,6 @@ import { createMainKeyboard } from "../keyboards/main-reply-keyboard.js";
 import { keyboardManager } from "../keyboards/keyboard-manager.js";
 import { pinnedMessageManager } from "../pinned/pinned-message-manager.js";
 import { summaryAggregator } from "../../app/managers/summary-aggregation-manager.js";
-import { stopEventListening } from "../../opencode/events.js";
 import { interactionManager } from "../../app/managers/interaction-manager.js";
 import { clearAllInteractionState } from "../../app/managers/interaction-manager.js";
 import { safeBackgroundTask } from "../../utils/safe-background-task.js";
@@ -89,7 +88,10 @@ async function isSessionBusy(sessionId: string, directory: string): Promise<bool
 
 async function resetMismatchedSessionContext(): Promise<void> {
   detachAttachedSession("session_mismatch_reset");
-  stopEventListening();
+  // Session mismatch只清理业务状态；global SSE生命周期不属于Session owner。
+  // 保留stream可避免四秒idle窗口在用户重新选择Session前终止daemon。
+  // 后续attach会更新同一consumer callback，不需要stop/start transport配对。
+  // mismatch不能成为legacy Event fallback或新daemon acquisition的触发条件。
   summaryAggregator.clear();
   foregroundSessionState.clearAll("session_mismatch_reset");
   assistantRunState.clearAll("session_mismatch_reset");

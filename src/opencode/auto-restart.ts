@@ -1,6 +1,7 @@
 import { config } from "../config.js";
 import { logger } from "../utils/logger.js";
 import { opencodeClient } from "./client.js";
+import { isDaemonMode, recoverOpencodeConnection } from "./daemon-connection.js";
 import { opencodeReadyLifecycle } from "./ready-lifecycle.js";
 import {
   resolveLocalOpencodeTarget,
@@ -80,15 +81,29 @@ export class OpencodeAutoRestartService {
       return false;
     }
 
-    const localTarget = resolveLocalOpencodeTarget(config.opencode.apiUrl);
+    this.started = true;
+
+    if (isDaemonMode()) {
+      // 默认daemon的owner由OpenCode维护；bot只在ready后的丢失窗口请求同一ensure路径。
+      // monitor调用同一connection owner，不能重新引入standalone serve acquisition。
+      // auto-restart flag只控制post-ready owner creation，不改变initial ensure。
+      // Event disconnect仍是即时恢复信号，interval只是现有产品monitor的补充观察。
+      await this.checkAndRestart("startup");
+      this.timer = setInterval(() => {
+        void this.checkAndRestart("interval");
+      }, config.opencode.monitorIntervalSec * 1000);
+      this.timer.unref?.();
+      return true;
+    }
+
+    const apiUrl = config.opencode.apiUrl;
+    const localTarget = apiUrl ? resolveLocalOpencodeTarget(apiUrl) : null;
     if (!localTarget) {
-      logger.warn(
-        `[OpenCodeAutoRestart] Disabled because OPENCODE_API_URL is not local: ${config.opencode.apiUrl}`,
-      );
+      logger.warn(`[OpenCodeAutoRestart] Disabled because OPENCODE_API_URL is not local: ${apiUrl ?? "unset"}`);
+      this.started = false;
       return false;
     }
 
-    this.started = true;
     this.localTarget = localTarget;
 
     logger.info(
@@ -117,13 +132,20 @@ export class OpencodeAutoRestartService {
   }
 
   private async checkAndRestart(reason: "startup" | "interval"): Promise<void> {
-    if (this.checkInProgress || !this.localTarget) {
+    if (this.checkInProgress || (!this.localTarget && !isDaemonMode())) {
       return;
     }
 
     this.checkInProgress = true;
 
     try {
+      if (isDaemonMode()) {
+        await recoverOpencodeConnection();
+        return;
+      }
+      const localTarget = this.localTarget;
+      if (!localTarget) return;
+
       if (await isOpencodeServerHealthy()) {
         logger.debug(`[OpenCodeAutoRestart] Health-check succeeded: reason=${reason}`);
         if (!this.serverWasHealthy) {
@@ -137,10 +159,10 @@ export class OpencodeAutoRestartService {
       opencodeReadyLifecycle.notifyUnavailable(`auto_restart_${reason}`);
 
       logger.warn(
-        `[OpenCodeAutoRestart] OpenCode server is unavailable, starting local server: reason=${reason}, port=${this.localTarget.port}`,
+        `[OpenCodeAutoRestart] OpenCode server is unavailable, starting local server: reason=${reason}, port=${localTarget.port}`,
       );
 
-      const childProcess = startLocalOpencodeServer(this.localTarget);
+      const childProcess = startLocalOpencodeServer(localTarget);
       childProcess.once("error", (error) => {
         logger.error("[OpenCodeAutoRestart] OpenCode server process failed to start", error);
       });
@@ -151,13 +173,13 @@ export class OpencodeAutoRestartService {
       const ready = await waitForOpencodeServerReady(SERVER_READY_TIMEOUT_MS);
       if (!ready) {
         logger.warn(
-          `[OpenCodeAutoRestart] OpenCode server was started but did not become ready: pid=${pid ?? "unknown"}, port=${this.localTarget.port}`,
+          `[OpenCodeAutoRestart] OpenCode server was started but did not become ready: pid=${pid ?? "unknown"}, port=${localTarget.port}`,
         );
         return;
       }
 
       logger.info(
-        `[OpenCodeAutoRestart] OpenCode server recovered: pid=${pid ?? "unknown"}, port=${this.localTarget.port}`,
+        `[OpenCodeAutoRestart] OpenCode server recovered: pid=${pid ?? "unknown"}, port=${localTarget.port}`,
       );
       this.serverWasHealthy = true;
       await opencodeReadyLifecycle.notifyReady(`auto_restart_${reason}`);

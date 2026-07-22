@@ -21,6 +21,7 @@ vi.mock("../../src/opencode/client.js", () => ({
 
 import {
   __setSseIdleTimeoutForTests,
+  startGlobalEventTransport,
   stopEventListening,
   subscribeToEvents,
 } from "../../src/opencode/events.js";
@@ -260,6 +261,28 @@ describe("opencode/events", () => {
     expect(subscribeMock).not.toHaveBeenCalled();
   });
 
+  it("recovers daemon global transport before retrying and never uses legacy events", async () => {
+    // 首次reject与第二次connected构成URL-loss最小行为切片，不依赖内部retry counter。
+    // recovery callback完成后才出现ready，锁定rebind-before-subscribe顺序。
+    // legacy mock保持可观察但必须零调用，避免未计数stream伪装daemon成功。
+    const connected = { type: "server.connected", properties: {} } as Event;
+    globalEventMock
+      .mockRejectedValueOnce(new Error("daemon URL A closed"))
+      .mockImplementationOnce(async (options: { signal: AbortSignal }) => ({
+        stream: createOpenStream([{ payload: connected }], options.signal),
+      }));
+    const onReady = vi.fn();
+    const onDisconnect = vi.fn().mockResolvedValue(undefined);
+
+    await startGlobalEventTransport(onReady, onDisconnect);
+
+    expect(onDisconnect).toHaveBeenCalledTimes(1);
+    expect(onReady).toHaveBeenCalledTimes(1);
+    // daemon断线必须先进入connection recovery；legacy stream无法维持daemon client count。
+    expect(subscribeMock).not.toHaveBeenCalled();
+    stopEventListening();
+  });
+
   it("falls back to legacy project events when global stream ends without project events", async () => {
     const event = { type: "session.idle", properties: { sessionID: "s1" } } as Event;
     const serverConnected = { type: "server.connected", properties: {} } as Event;
@@ -454,5 +477,40 @@ describe("opencode/events", () => {
     await subscription;
 
     expect(callback).not.toHaveBeenCalled();
+  });
+
+  it("does not deliver a queued daemon event after its Project consumer changes", async () => {
+    // 两层setImmediate之间切换Project，稳定重放transport已读到事件但business callback尚未执行的窗口。
+    // 旧事件既不能写入A，也不能转投B；同一global stream必须保持，不用abort规避consumer ownership。
+    const event = { type: "session.status", properties: { sessionID: "s1" } } as Event;
+    let resolveEvent: (event: { directory: string; payload: Event }) => void = () => undefined;
+    const eventPromise = new Promise<{ directory: string; payload: Event }>((resolve) => {
+      resolveEvent = resolve;
+    });
+    globalEventMock.mockResolvedValueOnce({ stream: createDeferredStream(eventPromise) });
+    const callbackA = vi.fn();
+    const callbackB = vi.fn();
+    const subscription = subscribeToEvents("D:/project-a", callbackA, "daemon");
+    await vi.waitFor(() => expect(globalEventMock).toHaveBeenCalledTimes(1));
+
+    const immediates: Array<() => void> = [];
+    const immediateSpy = vi.spyOn(global, "setImmediate").mockImplementation(((callback: () => void) => {
+      immediates.push(callback);
+      return {} as NodeJS.Immediate;
+    }) as typeof setImmediate);
+    resolveEvent({ directory: "D:/project-a", payload: event });
+    await vi.waitFor(() => expect(immediates).toHaveLength(1));
+    immediates.shift()?.();
+    await vi.waitFor(() => expect(immediates).toHaveLength(1));
+    await subscribeToEvents("D:/project-b", callbackB, "daemon");
+    immediates.shift()?.();
+    await Promise.resolve();
+
+    expect(callbackA).not.toHaveBeenCalled();
+    expect(callbackB).not.toHaveBeenCalled();
+    expect(globalEventMock).toHaveBeenCalledTimes(1);
+    immediateSpy.mockRestore();
+    stopEventListening();
+    await subscription;
   });
 });

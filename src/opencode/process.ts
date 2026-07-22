@@ -18,6 +18,12 @@ export interface OpencodeServeSpawnCommand {
   windowsHide: boolean;
 }
 
+export interface OpencodeDaemonCommand {
+  command: string;
+  args: string[];
+  windowsHide: boolean;
+}
+
 function isLocalHostname(hostname: string): boolean {
   return ["localhost", "127.0.0.1", "::1", "0.0.0.0"].includes(hostname.toLowerCase());
 }
@@ -108,6 +114,54 @@ export function createOpencodeServeSpawnCommand(
     args: ["serve", "--port", port],
     windowsHide: false,
   };
+}
+
+export function createOpencodeDaemonCommand(args: string[]): OpencodeDaemonCommand {
+  // argv数组是bot与OpenCode之间的信任边界，动态值不得进入shell字符串。
+  // executable解析沿用现有安装布局，不让bot拥有daemon lock或端口发现。
+  // 命令失败保留为diagnostic结果，绝不尝试固定端口备用路径。
+  if (process.platform === "win32") {
+    const resolvedExe = resolveWindowsOpencodeExe();
+    if (resolvedExe) {
+      return { command: resolvedExe, args: ["daemon", ...args], windowsHide: true };
+    }
+    // machine adapter拒绝cmd.exe字符串解释；找不到可信exe时明确失败，不创建shell fallback。
+    throw new Error("Unable to resolve opencode.exe for daemon command");
+  }
+
+  return { command: "opencode", args: ["daemon", ...args], windowsHide: false };
+}
+
+export async function runOpencodeDaemonCommand(args: string[]): Promise<{ stdout: string; stderr: string }> {
+  // stdout专用于单个machine JSON，stderr只进入失败诊断，二者不能混合解析。
+  // close code决定协议成功，部分stdout不能把失败进程伪装成有效owner。
+  // child不detached，短命CLI生命周期与真正daemon owner由OpenCode自行分离。
+  const command = createOpencodeDaemonCommand(args);
+  return new Promise((resolve, reject) => {
+    const child = spawn(command.command, command.args, {
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: command.windowsHide,
+      shell: false,
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr?.on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+    child.once("error", reject);
+    child.once("close", (code) => {
+      if (code === 0) {
+        resolve({ stdout, stderr });
+        return;
+      }
+      reject(new Error(`opencode daemon ${args[0] ?? "command"} exited with code ${code ?? "unknown"}: ${stderr.trim()}`));
+    });
+  });
 }
 
 export function startLocalOpencodeServer(target: LocalOpencodeTarget): ChildProcess {

@@ -495,6 +495,39 @@ describe("bot/commands/messages", () => {
     expect(interactionManager.getSnapshot()).toBeNull();
   });
 
+  it("treats a resolved SDK Revert error as failure", async () => {
+    // resolved error复现当前SDK真实语义，单纯mock reject无法捕获原始误报。
+    // success UI负断言确保working tree失败不会被Telegram显示为完成。
+    // interaction仍走既有error cleanup，测试不引入新的retry期待。
+    interactionManager.start({
+      kind: "custom",
+      expectedInput: "callback",
+      metadata: {
+        flow: "messages",
+        stage: "detail",
+        messageId: 600,
+        projectDirectory: "D:\\Projects\\Repo",
+        sessionId: "session-1",
+        messages: [{ id: "msg-1", text: "test prompt", created: 1000 }],
+        page: 0,
+        selectedIndex: 0,
+      },
+    });
+    mocked.sessionRevertMock.mockResolvedValue({ error: new Error("HTTP 404") });
+    const ctx = createCallbackContext("messages:revert", 600);
+
+    await handleMessagesCallback(ctx, testDeps);
+
+    // 当前SDK用resolved tuple表达HTTP失败，成功UI不能仅依赖Promise是否reject。
+    expect(ctx.editMessageText).toHaveBeenCalledWith(t("messages.revert_error"), {
+      reply_markup: undefined,
+    });
+    expect(ctx.editMessageText).not.toHaveBeenCalledWith(
+      t("messages.revert_success", { text: "test prompt" }),
+      expect.anything(),
+    );
+  });
+
   it("rejects revert from list stage", async () => {
     const messages = [{ id: "msg-1", text: "test prompt", created: 1000 }];
     interactionManager.start({

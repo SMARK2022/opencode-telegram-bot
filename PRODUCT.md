@@ -30,9 +30,10 @@ No public inbound ports are required for normal usage.
 ### OpenCode server management
 
 - Check OpenCode server status (running / not running)
-- Start OpenCode server from the app (`opencode serve`)
-- Stop OpenCode server from the app
-- Optionally monitor and auto-restart a local OpenCode server
+- Discover or start OpenCode's shared daemon from the app
+- Safely stop the shared daemon from the app
+- Optionally recreate an absent daemon after an unexpected disconnect
+- Preserve direct Server management when an explicit loopback URL is configured
 
 ### Project management
 

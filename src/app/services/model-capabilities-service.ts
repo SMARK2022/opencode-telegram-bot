@@ -1,6 +1,7 @@
 import { opencodeClient } from "../../opencode/client.js";
 import { logger } from "../../utils/logger.js";
 import type { Model } from "@opencode-ai/sdk/v2";
+import { getCurrentProject } from "../stores/settings-store.js";
 
 interface ModelCapabilitiesCache {
   [key: string]: Model["capabilities"] | null;
@@ -16,7 +17,13 @@ export async function getModelCapabilities(
   providerID: string,
   modelID: string,
 ): Promise<Model["capabilities"] | null> {
-  const cacheKey = `${providerID}/${modelID}`;
+  const project = getCurrentProject();
+  // capabilities取决于Project内可见Provider配置，process-global model key不足以唯一标识。
+  // 缺少Project时返回既有unknown结果，不发送可能落入默认目录的请求。
+  // directory同时进入request与cache key，二者不能只修一侧。
+  if (!project?.worktree) return null;
+  // Project worktree是Provider catalog identity的一部分，同名model不能跨Project复用能力缓存。
+  const cacheKey = `${project.worktree}:${providerID}/${modelID}`;
 
   if (capabilitiesCache[cacheKey] !== undefined) {
     logger.debug(`[ModelCapabilities] Cache hit for ${cacheKey}`);
@@ -25,7 +32,7 @@ export async function getModelCapabilities(
 
   try {
     logger.debug(`[ModelCapabilities] Fetching capabilities for ${cacheKey}`);
-    const response = await opencodeClient.config.providers();
+    const response = await opencodeClient.config.providers({ directory: project.worktree });
 
     if (response.error || !response.data) {
       logger.error("[ModelCapabilities] API returned error:", response.error);

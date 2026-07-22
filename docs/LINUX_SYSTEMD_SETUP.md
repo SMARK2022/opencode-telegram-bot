@@ -54,16 +54,20 @@ sudo systemctl start opencode-telegram-bot
 sudo systemctl status opencode-telegram-bot
 ```
 
-## 5. Optional: auto-restart local OpenCode server
+## 5. Optional: recover a lost shared daemon
 
-For VPS setups with scheduled tasks, enable the bot's local OpenCode server monitor in the bot `.env` file:
+Leave `OPENCODE_API_URL` unset so the service uses OpenCode's shared-daemon
+discovery. For unattended scheduled tasks, allow the bot to recreate an absent
+owner after an unexpected disconnect:
 
 ```env
 OPENCODE_AUTO_RESTART_ENABLED=true
 OPENCODE_MONITOR_INTERVAL_SEC=300
 ```
 
-This only works when `OPENCODE_API_URL` points to a local address, for example `http://localhost:4096`. The bot starts `opencode serve` with the configured port and checks the server every 300 seconds by default.
+Run the service as the same OS user and with the same `HOME`, XDG variables, and
+`opencode` executable as the TUI. The bot invokes OpenCode's existing daemon
+ensure path; it does not start a parallel fixed-port `opencode serve` process.
 
 ## 6. View logs
 

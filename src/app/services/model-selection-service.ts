@@ -1,4 +1,4 @@
-import { getCurrentModel, setCurrentModel } from "../stores/settings-store.js";
+import { getCurrentModel, getCurrentProject, setCurrentModel } from "../stores/settings-store.js";
 import { config } from "../../config.js";
 import { opencodeClient } from "../../opencode/client.js";
 import { logger } from "../../utils/logger.js";
@@ -18,10 +18,17 @@ const SERVER_UNAVAILABLE_ERROR_MARKERS = [
   "connect refused",
 ];
 
-let cachedValidModelKeys: Set<string> | null = null;
-let cachedAllModels: FavoriteModel[] | null = null;
-let modelCatalogCacheExpiresAt = 0;
-let modelCatalogFetchInFlight: Promise<Set<string> | null> | null = null;
+interface ModelCatalogCache {
+  validModelKeys: Set<string> | null;
+  allModels: FavoriteModel[] | null;
+  expiresAt: number;
+  inFlight: Promise<Set<string> | null> | null;
+}
+
+const modelCatalogCaches = new Map<string, ModelCatalogCache>();
+// worktree是catalog语义身份，不使用Project展示名或process-global singleton。
+// 每个entry独立持有TTL和in-flight，跨Project并发不能共享未完成Promise。
+// stale-on-failure只在同一worktree内保留，兼容旧行为但不扩大作用域。
 
 const SEARCH_RESULTS_LIMIT = 10;
 
@@ -142,29 +149,41 @@ function logModelCatalogRefreshFailure(error: unknown, type: "error" | "exceptio
 }
 
 async function getValidModelKeys(options?: { force?: boolean }): Promise<Set<string> | null> {
-  if (!options?.force && cachedValidModelKeys && Date.now() < modelCatalogCacheExpiresAt) {
+  // 无selected Project时不发送unscoped请求，避免Server选择错误InstanceContext。
+  // force只刷新当前worktree，不清空其他Project的合法缓存。
+  // literal directory直接来自settings owner，consumer不自行规范化路径。
+  const directory = getCurrentProject()?.worktree;
+  if (!directory) return null;
+  const cache = modelCatalogCaches.get(directory) ?? {
+    validModelKeys: null,
+    allModels: null,
+    expiresAt: 0,
+    inFlight: null,
+  };
+  modelCatalogCaches.set(directory, cache);
+  if (!options?.force && cache.validModelKeys && Date.now() < cache.expiresAt) {
     logger.debug(
-      `[ModelManager] Model catalog cache hit: models=${cachedValidModelKeys.size}, ttlMs=${modelCatalogCacheExpiresAt - Date.now()}`,
+      `[ModelManager] Model catalog cache hit: models=${cache.validModelKeys.size}, ttlMs=${cache.expiresAt - Date.now()}`,
     );
-    return cachedValidModelKeys;
+    return cache.validModelKeys;
   }
 
-  if (modelCatalogFetchInFlight) {
+  if (cache.inFlight) {
     logger.debug("[ModelManager] Awaiting in-flight model catalog refresh");
-    return modelCatalogFetchInFlight;
+    return cache.inFlight;
   }
 
-  modelCatalogFetchInFlight = (async () => {
+  cache.inFlight = (async () => {
     try {
       logger.debug("[ModelManager] Refreshing model catalog from OpenCode API");
-      const response = await opencodeClient.config.providers();
+      const response = await opencodeClient.config.providers({ directory });
 
       if (response.error || !response.data) {
         logModelCatalogRefreshFailure(response.error, "error");
 
-        if (cachedValidModelKeys) {
+        if (cache.validModelKeys) {
           logger.warn("[ModelManager] Using stale model catalog cache after refresh failure");
-          return cachedValidModelKeys;
+          return cache.validModelKeys;
         }
 
         return null;
@@ -180,30 +199,31 @@ async function getValidModelKeys(options?: { force?: boolean }): Promise<Set<str
         }
       }
 
-      cachedValidModelKeys = validModelKeys;
-      cachedAllModels = allModels;
-      modelCatalogCacheExpiresAt = Date.now() + MODEL_CATALOG_CACHE_TTL_MS;
+      // worktree同时隔离cache与in-flight，Project B不会等待或读取Project A的catalog。
+      cache.validModelKeys = validModelKeys;
+      cache.allModels = allModels;
+      cache.expiresAt = Date.now() + MODEL_CATALOG_CACHE_TTL_MS;
 
       logger.debug(
         `[ModelManager] Model catalog refreshed: providers=${response.data.providers.length}, models=${validModelKeys.size}`,
       );
 
-      return cachedValidModelKeys;
+      return cache.validModelKeys;
     } catch (err) {
       logModelCatalogRefreshFailure(err, "exception");
 
-      if (cachedValidModelKeys) {
+      if (cache.validModelKeys) {
         logger.warn("[ModelManager] Using stale model catalog cache after refresh exception");
-        return cachedValidModelKeys;
+        return cache.validModelKeys;
       }
 
       return null;
     } finally {
-      modelCatalogFetchInFlight = null;
+      cache.inFlight = null;
     }
   })();
 
-  return modelCatalogFetchInFlight;
+  return cache.inFlight;
 }
 
 function normalizeFavoriteModels(state: OpenCodeModelState): FavoriteModel[] {
@@ -379,10 +399,7 @@ export async function reconcileStoredModelSelection(options?: {
 }
 
 export function __resetModelCatalogCacheForTests(): void {
-  cachedValidModelKeys = null;
-  cachedAllModels = null;
-  modelCatalogCacheExpiresAt = 0;
-  modelCatalogFetchInFlight = null;
+  modelCatalogCaches.clear();
 }
 
 /**
@@ -411,12 +428,14 @@ export async function searchModels(query: string): Promise<FavoriteModel[]> {
   // Ensure catalog is loaded (uses cache if fresh)
   const validKeys = await getValidModelKeys();
 
-  if (!validKeys || !cachedAllModels) {
+  const directory = getCurrentProject()?.worktree;
+  const allModels = directory ? modelCatalogCaches.get(directory)?.allModels : null;
+  if (!validKeys || !allModels) {
     logger.warn("[ModelManager] Model catalog unavailable, skipping search");
     return [];
   }
 
-  const results = cachedAllModels
+  const results = allModels
     .filter((model) => {
       const key = getModelKey(model.providerID, model.modelID).toLowerCase();
       return key.includes(normalizedQuery);

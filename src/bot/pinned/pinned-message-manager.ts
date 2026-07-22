@@ -428,16 +428,25 @@ class PinnedMessageManager {
       );
 
       if (!error && data && data.length > 0) {
-        this.state.changedFiles = data.map((d) => ({
-          file: d.file,
-          additions: d.additions,
-          deletions: d.deletions,
-        }));
-        logger.info(
-          `[PinnedManager] Loaded ${this.state.changedFiles.length} file diffs from session.diff()`,
-        );
-        await this.updatePinnedMessage();
-        return;
+        // legacy Snapshot允许缺少file；只让有真实名称的diff进入FileChange，绝不合成错误文件名。
+        // mixed数据保留全部named项，单个legacy缺口不能丢弃可展示的真实diff。
+        // all-unnamed结果继续进入既有message-part compatibility，而不是报告空成功。
+        // type guard位于display adapter trust seam，Server schema仍允许历史Snapshot。
+        const namedFiles = data
+          .filter((diff): diff is typeof diff & { file: string } => Boolean(diff.file))
+          .map((diff) => ({
+            file: diff.file,
+            additions: diff.additions,
+            deletions: diff.deletions,
+          }));
+        if (namedFiles.length > 0) {
+          this.state.changedFiles = namedFiles;
+          logger.info(
+            `[PinnedManager] Loaded ${this.state.changedFiles.length} file diffs from session.diff()`,
+          );
+          await this.updatePinnedMessage();
+          return;
+        }
       }
 
       // Fallback: parse tool parts from session messages

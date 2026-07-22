@@ -1,4 +1,3 @@
-// @ts-expect-error — node-fetch v2 ships no TS types and we avoid adding @types/node-fetch
 import nodeFetch from "node-fetch";
 import { Agent as HttpsAgent } from "https";
 import type { Bot, Context } from "grammy";

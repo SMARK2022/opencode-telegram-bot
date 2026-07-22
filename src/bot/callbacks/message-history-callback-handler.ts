@@ -221,11 +221,16 @@ export async function handleMessagesCallback(
       await ctx.answerCallbackQuery();
 
       try {
-        await opencodeClient.session.revert({
+        const { error: revertError } = await opencodeClient.session.revert({
           sessionID: metadata.sessionId,
           directory: metadata.projectDirectory,
           messageID: selectedMessage.id,
         });
+        // 当前SDK把HTTP失败解析为resolved tuple；try/catch之外仍必须检查error才能避免误报Revert成功。
+        // Revert与Fork共享SDK response contract，不能因方法名不同而只检查throw。
+        // error进入既有失败UI和interaction cleanup，不创建新的成功或重试分支。
+        // working tree状态只由Server确认成功后显示，Telegram不能提前承诺Revert完成。
+        if (revertError) throw revertError;
 
         const successText = t("messages.revert_success", { text: selectedMessage.text });
         await ctx.editMessageText(truncateMessageHistoryText(successText, TELEGRAM_MESSAGE_LIMIT), {

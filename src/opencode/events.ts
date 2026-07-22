@@ -5,6 +5,7 @@ import { isExpectedOpencodeUnavailableError } from "../utils/opencode-error.js";
 
 type EventCallback = (event: Event) => void;
 type EventStreamSource = "global" | "legacy";
+export type EventTransportMode = "daemon" | "server";
 type EventStreamSubscription = {
   source: EventStreamSource;
   stream: AsyncGenerator<unknown, unknown, unknown>;
@@ -29,8 +30,15 @@ let eventStream: AsyncGenerator<unknown, unknown, unknown> | null = null;
 let eventCallback: EventCallback | null = null;
 let isListening = false;
 let activeDirectory: string | null = null;
+let activeMode: EventTransportMode = "server";
 let streamAbortController: AbortController | null = null;
 let listenerGeneration = 0;
+let consumerGeneration = 0;
+let readyCallback: (() => void) | null = null;
+let disconnectCallback: (() => Promise<void>) | null = null;
+// transport状态属于bot进程，directory只属于当前business consumer过滤器。
+// ready与disconnect callback连接lifecycle owner，但不复制其status/ensure策略。
+// daemon与Server mode共享读取循环，只在已证明的legacy compatibility处分支。
 let consecutiveTimeouts = 0;
 
 type StreamReadResult =
@@ -142,6 +150,9 @@ function isSameDirectory(left: string, right: string): boolean {
 }
 
 function normalizeGlobalEvent(rawEvent: unknown, directory: string): Event | null {
+  // 空directory表示尚未选择Project，connected/heartbeat仍必须被消费以维持liveness。
+  // 有directory时才过滤envelope，避免Project A事件进入Project B业务状态。
+  // payload形状未知时fail closed，不能合成Session或Project mutation。
   if (isEventLike(rawEvent)) {
     return rawEvent;
   }
@@ -152,7 +163,7 @@ function normalizeGlobalEvent(rawEvent: unknown, directory: string): Event | nul
   }
 
   const eventDirectory = typeof rawEvent.directory === "string" ? rawEvent.directory : null;
-  if (eventDirectory && !isSameDirectory(eventDirectory, directory)) {
+  if (directory && eventDirectory && !isSameDirectory(eventDirectory, directory)) {
     return null;
   }
 
@@ -204,9 +215,19 @@ async function subscribeToLegacyEventStream(
   return { source: "legacy", stream: result.stream };
 }
 
-export async function subscribeToEvents(directory: string, callback: EventCallback): Promise<void> {
-  if (isListening && activeDirectory === directory) {
+export async function subscribeToEvents(
+  directory: string,
+  callback: EventCallback,
+  mode: EventTransportMode = "server",
+): Promise<void> {
+  // daemon mode更新callback/directory时复用同一stream，Project切换不得制造零client窗口。
+  // explicit Server切换directory保留既有重订阅语义，因为它不承担daemon idle计数。
+  // listener generation保护延迟callback，旧consumer不能在切换后写入新Project状态。
+  if (isListening && activeMode === mode && (mode === "daemon" || activeDirectory === directory)) {
+    // transport保持不变时仍需换代business consumer，丢弃切换前已排队的旧Project callback。
+    consumerGeneration++;
     eventCallback = callback;
+    activeDirectory = directory;
     logger.debug(`Event listener already running for ${directory}`);
     return;
   }
@@ -223,6 +244,8 @@ export async function subscribeToEvents(directory: string, callback: EventCallba
   const generation = ++listenerGeneration;
 
   activeDirectory = directory;
+  activeMode = mode;
+  consumerGeneration++;
   eventCallback = callback;
   isListening = true;
   streamAbortController = controller;
@@ -231,7 +254,7 @@ export async function subscribeToEvents(directory: string, callback: EventCallba
     let reconnectAttempt = 0;
     let useLegacyEventsOnce = false;
 
-    while (isListening && activeDirectory === directory && !controller.signal.aborted) {
+    while (isListening && isCurrentListener(directory, mode) && !controller.signal.aborted) {
       let attemptAbort: ReturnType<typeof createAttemptAbortController> | null = null;
       try {
         let subscription: EventStreamSubscription;
@@ -244,11 +267,11 @@ export async function subscribeToEvents(directory: string, callback: EventCallba
             subscription = await subscribeToGlobalEventStream(attemptAbort.controller.signal);
             logger.debug(`Using global OpenCode event stream for ${directory}`);
           } catch (error) {
-            if (controller.signal.aborted || !isListening || activeDirectory !== directory) {
+            if (controller.signal.aborted || !isListening || !isCurrentListener(directory, mode)) {
               throw error;
             }
 
-            if (isExpectedOpencodeUnavailableError(error)) {
+            if (mode === "daemon" || isExpectedOpencodeUnavailableError(error)) {
               throw error;
             }
 
@@ -266,7 +289,7 @@ export async function subscribeToEvents(directory: string, callback: EventCallba
         let usefulEventCount = 0;
 
         try {
-          while (isListening && activeDirectory === directory && !controller.signal.aborted) {
+          while (isListening && isCurrentListener(directory, mode) && !controller.signal.aborted) {
             const readResult = await readStreamWithIdleTimeout(
               eventStream,
               attemptAbort.controller.signal,
@@ -298,26 +321,30 @@ export async function subscribeToEvents(directory: string, callback: EventCallba
             // This allows grammY to handle getUpdates between SSE events
             await new Promise<void>((resolve) => setImmediate(resolve));
 
-            const normalizedEvent = normalizeEvent(event, subscription.source, directory);
+            const normalizedEvent = normalizeEvent(event, subscription.source, activeDirectory ?? directory);
             if (!normalizedEvent) {
               continue;
             }
 
             if (normalizedEvent.type !== "server.connected") {
               usefulEventCount++;
+            } else {
+              readyCallback?.();
             }
 
             if (eventCallback) {
               // Use setImmediate to avoid blocking the event loop
               // and let grammY process incoming Telegram updates
               const callbackSnapshot = eventCallback;
+              const callbackGeneration = consumerGeneration;
               setImmediate(() => {
                 if (
                   streamAbortController !== controller ||
                   controller.signal.aborted ||
                   !isListening ||
-                  activeDirectory !== directory ||
-                  listenerGeneration !== generation
+                  !isCurrentListener(directory, mode) ||
+                  listenerGeneration !== generation ||
+                  consumerGeneration !== callbackGeneration
                 ) {
                   return;
                 }
@@ -336,11 +363,11 @@ export async function subscribeToEvents(directory: string, callback: EventCallba
 
         eventStream = null;
 
-        if (!isListening || activeDirectory !== directory || controller.signal.aborted) {
+        if (!isListening || !isCurrentListener(directory, mode) || controller.signal.aborted) {
           break;
         }
 
-        if (subscription.source === "global" && usefulEventCount === 0) {
+        if (mode === "server" && subscription.source === "global" && usefulEventCount === 0) {
           useLegacyEventsOnce = true;
           logger.warn(
             `Global event stream ended without project events for ${directory}, falling back to project event stream`,
@@ -350,6 +377,8 @@ export async function subscribeToEvents(directory: string, callback: EventCallba
 
         reconnectAttempt++;
         consecutiveTimeouts = 0;
+        // 下一次global subscribe必须读取recovery后live binding，不能继续请求失效URL。
+        if (mode === "daemon") await disconnectCallback?.();
         const reconnectDelay = getReconnectDelayMs(reconnectAttempt);
         logger.warn(
           `Event stream ended for ${directory}, reconnecting in ${reconnectDelay}ms (attempt=${reconnectAttempt})`,
@@ -363,7 +392,7 @@ export async function subscribeToEvents(directory: string, callback: EventCallba
         attemptAbort?.cleanup();
         eventStream = null;
 
-        if (controller.signal.aborted || !isListening || activeDirectory !== directory) {
+        if (controller.signal.aborted || !isListening || !isCurrentListener(directory, mode)) {
           logger.info("Event listener aborted");
           return;
         }
@@ -375,6 +404,7 @@ export async function subscribeToEvents(directory: string, callback: EventCallba
 
         reconnectAttempt++;
         consecutiveTimeouts++;
+        if (mode === "daemon") await disconnectCallback?.();
         const reconnectDelay = getReconnectDelayMs(reconnectAttempt);
         if (isEventStreamIdleTimeoutError(error)) {
           const timeoutWarning =
@@ -418,25 +448,51 @@ export async function subscribeToEvents(directory: string, callback: EventCallba
     throw error;
   } finally {
     if (streamAbortController === controller) {
-      if (isListening && activeDirectory === directory && !controller.signal.aborted) {
+      if (isListening && isCurrentListener(directory, mode) && !controller.signal.aborted) {
         logger.warn(`Event stream ended for ${directory}, listener marked as disconnected`);
       }
 
       streamAbortController = null;
       eventStream = null;
       eventCallback = null;
+      readyCallback = null;
+      disconnectCallback = null;
       isListening = false;
       activeDirectory = null;
     }
   }
 }
 
+export async function startGlobalEventTransport(
+  onReady: () => void,
+  onDisconnect: () => Promise<void>,
+): Promise<void> {
+  // startup promise只等待首个server.connected，长期读取循环继续在后台拥有stream。
+  // connected是SDK rebind后的authoritative ready证据，health成功不能替代它。
+  // reject仅表示首连失败，外层supervisor负责同一模式重试而非fallback。
+  await new Promise<void>((resolve, reject) => {
+    readyCallback = () => {
+      onReady();
+      resolve();
+    };
+    disconnectCallback = onDisconnect;
+    void subscribeToEvents("", () => undefined, "daemon").catch(reject);
+  });
+}
+
+function isCurrentListener(directory: string, mode: EventTransportMode): boolean {
+  return activeMode === mode && (mode === "daemon" || activeDirectory === directory);
+}
+
 export function stopEventListening(): void {
   listenerGeneration++;
+  consumerGeneration++;
   streamAbortController?.abort();
   streamAbortController = null;
   isListening = false;
   eventCallback = null;
+  readyCallback = null;
+  disconnectCallback = null;
   eventStream = null;
   activeDirectory = null;
   logger.info("Event listener stopped");

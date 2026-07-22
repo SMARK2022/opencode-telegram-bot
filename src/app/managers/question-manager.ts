@@ -178,6 +178,17 @@ class QuestionManager {
     return [...this.state.messageIds];
   }
 
+  resolveRequest(requestID: string): number[] {
+    // TUI与Telegram可能竞速；只允许共享事件清理同一request，不能误伤后来出现的问题。
+    // 先复制message IDs再clear，调用方可删除旧消息而manager立即进入幂等inactive状态。
+    // unrelated ID返回空数组是明确no-op，不暴露内部state或部分清理。
+    // Telegram本地reply已clear时，echoed event再次调用仍不会重复删除。
+    if (this.state.requestID !== requestID) return [];
+    const messageIds = [...this.state.messageIds];
+    this.clear();
+    return messageIds;
+  }
+
   isActive(): boolean {
     logger.debug(
       `[QuestionManager] isActive check: ${this.state.isActive}, questions=${this.state.questions.length}, currentIndex=${this.state.currentIndex}`,

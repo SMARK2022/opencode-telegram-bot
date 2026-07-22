@@ -8,6 +8,7 @@ dotenv.config({ path: runtimePaths.envFilePath, quiet: true });
 export type MessageFormatMode = "raw" | "markdown";
 export type TtsProvider = "openai" | "google" | "elevenlabs" | "edge";
 export type SttRequestFormat = "multipart" | "json";
+export type OpencodeConnectionMode = "daemon" | "server";
 
 function getEnvVar(key: string, required: boolean = true): string {
   const value = process.env[key];
@@ -190,10 +191,17 @@ export function buildTelegramConfig(): {
   };
 }
 
+const configuredOpencodeApiUrl = getEnvVar("OPENCODE_API_URL", false).trim();
+// trim发生在唯一配置入口，后续模块不再各自解释空白字符。
+// 空字符串与wizard留空共享同一契约，避免部署方式改变连接模式。
+// hostname不参与意图推断，显式loopback URL仍属于direct Server支持域。
+
 export const config = {
   telegram: buildTelegramConfig(),
   opencode: {
-    apiUrl: getEnvVar("OPENCODE_API_URL", false) || "http://localhost:4096",
+    // 空值是安装向导的“未配置”结果；只有trim后的非空URL才表达显式Server意图。
+    apiUrl: configuredOpencodeApiUrl || undefined,
+    mode: (configuredOpencodeApiUrl ? "server" : "daemon") as OpencodeConnectionMode,
     username: getEnvVar("OPENCODE_SERVER_USERNAME", false) || "opencode",
     password: getEnvVar("OPENCODE_SERVER_PASSWORD", false),
     autoRestartEnabled: getOptionalBooleanEnvVar("OPENCODE_AUTO_RESTART_ENABLED", false),

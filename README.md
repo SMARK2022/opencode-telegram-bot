@@ -67,17 +67,14 @@ Planned features currently in development are listed in [Current Task List](PROD
 
 You'll also need your **Telegram User ID** — send any message to [@userinfobot](https://t.me/userinfobot) and it will reply with your numeric ID.
 
-### 2. Start OpenCode Server
+### 2. Install OpenCode
 
-Run the OpenCode server on the same machine where the bot runs:
+Keep `opencode` available on the bot process `PATH`. With `OPENCODE_API_URL`
+unset, the bot automatically discovers or starts the same shared daemon used by
+the normal OpenCode TUI. No port, URL, `serve`, or `attach` command is required.
 
-```bash
-opencode serve
-```
-
-> The bot connects to the local OpenCode API at `http://localhost:4096` by default.
-
-> After the bot is configured, you can also start and stop the local OpenCode server from Telegram with `/opencode_start` and `/opencode_stop`.
+> `/opencode_start` and `/opencode_stop` manage that shared daemon. Any explicit
+> `OPENCODE_API_URL`, including a loopback/custom-port URL, keeps direct Server mode.
 
 ### 3. Install & Run
 
@@ -181,13 +178,10 @@ Scheduled tasks let you prepare prompts in advance and run them automatically la
 
 After you create a new session, select an existing one, or let the bot auto-create one from your first prompt, the bot automatically starts tracking that session. It follows live events from the same OpenCode CLI session, shows external text input sent from another TUI client, and lets you continue the same session from Telegram.
 
-For this to work, the console OpenCode instance must be started on the same port the bot connects to. By default, OpenCode starts on a random port, so use one of the setups below.
-
-- **Single TUI, simplest setup** — start OpenCode on a fixed port: `opencode --port 4096`
-- Point the bot to `http://127.0.0.1:4096`, then select or create the same session in Telegram
-- **Multiple TUI clients, shared backend** — start one backend: `opencode serve --port 4096`
-- In each terminal client, connect with: `opencode attach http://127.0.0.1:4096`
-- In the bot, select or create the same session to start tracking it automatically
+Leave `OPENCODE_API_URL` unset and start the bot and TUI in either order. Both
+clients discover the same shared daemon automatically, including its random
+internal URL. The bot keeps one global Event stream open, so no manual TUI must
+remain running solely to keep the daemon alive.
 
 ## Configuration
 
@@ -213,8 +207,8 @@ Configuration can be provided through process environment variables or an `.env`
 | `TELEGRAM_API_ROOT`                        | Custom Telegram Bot API root URL (e.g. nginx reverse-proxying `api.telegram.org`); applied to API calls and file downloads | No | `https://api.telegram.org` |
 | `TELEGRAM_PROXY_SECRET`                    | Shared secret sent as `X-Proxy-Secret` header on every Bot API request and file download (used with `TELEGRAM_API_ROOT`) | No | —                        |
 | `TELEGRAM_FORCE_IPV4`                      | Force IPv4 for direct Telegram API and file requests; useful when IPv6 DNS works but outbound IPv6 is broken           |    No    | `false`                  |
-| `OPENCODE_API_URL`                         | OpenCode server URL                                                                                                   |    No    | `http://localhost:4096`  |
-| `OPENCODE_AUTO_RESTART_ENABLED`            | Automatically restart a local OpenCode server when health-checks fail                                                 |    No    | `false`                  |
+| `OPENCODE_API_URL`                         | Explicit direct Server URL; omit or leave blank to use the shared daemon                                              |    No    | shared daemon            |
+| `OPENCODE_AUTO_RESTART_ENABLED`            | Recreate an absent shared daemon after an unexpected post-ready disconnect; explicit loopback Server monitoring is preserved | No | `false` |
 | `OPENCODE_MONITOR_INTERVAL_SEC`            | Health monitor interval in seconds when OpenCode auto-restart is enabled                                              |    No    | `300`                    |
 | `OPENCODE_SERVER_USERNAME`                 | Server auth username                                                                                                  |    No    | `opencode`               |
 | `OPENCODE_SERVER_PASSWORD`                 | Server auth password                                                                                                  |    No    | —                        |
@@ -450,9 +444,9 @@ npm run dev
 
 **"OpenCode server is not available"**
 
-- Ensure an OpenCode server is running at the configured `OPENCODE_API_URL` (default: `http://localhost:4096`)
-- For a local setup, you can start it with `opencode serve` or use `/opencode_start` in Telegram
-- For VPS/systemd setups with scheduled tasks, enable `OPENCODE_AUTO_RESTART_ENABLED=true` to let the bot restart a local OpenCode server when health-checks fail
+- Ensure the `opencode` executable is available to the bot service user and uses the same `HOME`/XDG configuration as the TUI
+- Leave `OPENCODE_API_URL` blank for shared-daemon discovery, or use `/opencode_start` in Telegram
+- For unattended scheduled tasks, enable `OPENCODE_AUTO_RESTART_ENABLED=true` so an unexpectedly lost daemon owner can be recreated
 - If `OPENCODE_API_URL` points to a remote server, verify that the address is reachable from the bot machine and that the remote server is healthy
 
 **No models in model picker**
